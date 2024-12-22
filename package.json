@@ -1,31 +1,33 @@
 {
-  "name": "srt",
-  "version": "0.1.0",
-  "private": true,
-  "scripts": {
-    "dev": "next dev",
-    "build": "next build",
-    "start": "next start",
-    "lint": "next lint"
-  },
-  "dependencies": {
-    "@streamparser/json": "^0.0.20",
-    "@vercel/kv": "^1.0.1",
-    "eventsource-parser": "^1.1.1",
-    "humanloop": "^0.5.36",
-    "next": "14.0.4",
-    "react": "^18",
-    "react-dom": "^18",
-    "stripe": "^14.13.0",
-    "tiktoken": "^1.0.11"
-  },
-  "devDependencies": {
-    "@types/node": "^20",
-    "@types/react": "^18",
-    "@types/react-dom": "^18",
-    "autoprefixer": "^10.0.1",
-    "postcss": "^8",
-    "tailwindcss": "^3.3.0",
-    "typescript": "^5"
-  }
+	"name": "srt",
+	"version": "0.1.0",
+	"private": true,
+	"scripts": {
+		"dev": "next dev",
+		"build": "next build",
+		"start": "next start",
+		"lint": "next lint"
+	},
+	"dependencies": {
+		"@ai-sdk/google": "^1.0.12",
+		"@streamparser/json": "^0.0.20",
+		"@vercel/kv": "^1.0.1",
+		"ai": "^4.0.22",
+		"eventsource-parser": "^1.1.1",
+		"humanloop": "^0.5.36",
+		"next": "14.0.4",
+		"react": "^18",
+		"react-dom": "^18",
+		"stripe": "^14.13.0",
+		"tiktoken": "^1.0.11"
+	},
+	"devDependencies": {
+		"@types/node": "^20",
+		"@types/react": "^18",
+		"@types/react-dom": "^18",
+		"autoprefixer": "^10.0.1",
+		"postcss": "^8",
+		"tailwindcss": "^3.3.0",
+		"typescript": "^5"
+	}
 }

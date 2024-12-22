@@ -1,107 +1,89 @@
 import { groupSegmentsByTokenLength, parseStreamedResponse } from "@/lib/srt";
 import { parseSegment } from "@/lib/client";
-import { kv } from '@vercel/kv';
-const stripe = require('stripe')(process.env.STRIPE_SECRET_KEY);
+import { kv } from "@vercel/kv";
+import { google } from "@ai-sdk/google";
+import { generateText } from "ai";
+const stripe = require("stripe")(process.env.STRIPE_SECRET_KEY);
 
-export const dynamic = 'force-dynamic' // defaults to auto
+export const dynamic = "force-dynamic";
 
-// The total number of tokens supported by OpenAI APIs is 4096 across all models.
-// That means Output + Input + Prompt = 4096 tokens. Since our prompt is 50 tokens,
-// and the output is 4.5 * input, we can calculate the maximum input length as:
-// 4096 = 50 + 4.5 * Input + Input
-// i.e. Input = 700 tokens maximum
-// We use 4.5 * Input to consider the worst-case scenario where we're translating from
-// English to Indian, which is the longest language in terms of token length.
 const MAX_TOKENS_IN_SEGMENT = 700;
 
-const retrieveTranslation = async (
-  text: string,
-  language: string
-) => {
-  const response = await fetch("https://api.openai.com/v1/chat/completions", {
-    headers: {
-      "Content-Type": "application/json",
-      Authorization: `Bearer ${process.env.OPENAI_API_KEY}`,
-    },
-    method: "POST",
-    body: JSON.stringify({
-      model: "gpt-3.5-turbo-0125",
-      max_tokens: 2048,
-      frequency_penalty: 0,
-      presence_penalty: 0,
-      top_p: 1,
-      temperature: 1,
-      messages: [
-        {
-          role: "system",
-          content:
-            `
-Translate the input text to ${language}. The input text is contiguous but has been broken up into segments. Each segment is an element in a JSON array. 
+const retrieveTranslation = async (text: string, language: string) => {
+	let retries = 3;
+	while (retries > 0) {
+		try {
+			const { text: translatedText } = await generateText({
+				model: google("gemini-2.0-flash-exp"),
+				messages: [
+					{
+						role: "system",
+						content:
+							"You are an experienced semantic translator, specialized in creating SRT files. Separate translation segments with the '|' symbol",
+					},
+					{
+						role: "user",
+						content: `Translate this to ${language}: ${text}`,
+					},
+				],
+			});
 
-Return the translated segments in the same order and the same number of elements. Do not remove any segments. Do not add any segments. You MUST maintain the exact number of segments.
-          `.trim(),
-        },
-        {
-          role: "user",
-          content: text,
-        },
-      ],
-      stream: true,
-    }),
-  });
-
-  if (response.status !== 200) {
-    throw new Error("OpenAI API returned an error");
-  }
-
-  return response;
+			return translatedText;
+		} catch (error) {
+			console.error("Translation error:", error);
+			if (retries > 1) {
+				console.warn("Retrying translation...");
+				await new Promise((resolve) => setTimeout(resolve, 1000));
+				retries--;
+				continue;
+			}
+			throw error;
+		}
+	}
 };
 
 export async function POST(request: Request) {
-  try {
-    const { id } = await request.json();
-    if (!id) return new Response(JSON.stringify({ error: "'id' required" }), { status: 400 });
+	try {
+		const { id } = await request.json();
+		if (!id)
+			return new Response(JSON.stringify({ error: "'id' required" }), {
+				status: 400,
+			});
 
-    const { sessionId, content, language } = await kv.get<any>(id)
-    const session = await stripe.checkout.sessions.retrieve(sessionId);
+		const { sessionId, content, language } = await kv.get<any>(id);
+		const session = await stripe.checkout.sessions.retrieve(sessionId);
 
-    const segments = content.split(/\r\n\r\n|\n\n/).map(parseSegment);
-    const groups = groupSegmentsByTokenLength(segments, MAX_TOKENS_IN_SEGMENT);
+		const segments = content.split(/\r\n\r\n|\n\n/).map(parseSegment);
+		const groups = groupSegmentsByTokenLength(segments, MAX_TOKENS_IN_SEGMENT);
 
-    let index = 0;
-    const encoder = new TextEncoder();
-    const decoder = new TextDecoder();
+		let currentIndex = 0;
+		const encoder = new TextEncoder();
 
-    const stream = new ReadableStream({
-      async start(controller) {
-        for (const group of groups) {
-          const text = JSON.stringify(group.map((segment) => segment.text));
-          const response = await retrieveTranslation(text, language);
-          const srtStream = parseStreamedResponse(response);
-          const reader = srtStream.getReader();
+		const stream = new ReadableStream({
+			async start(controller) {
+				for (const group of groups) {
+					const text = group.map((segment) => segment.text).join("|");
+					const translatedText = await retrieveTranslation(text, language);
+					if (!translatedText) continue;
 
-          while (true) {
-            const { done, value } = await reader.read();
-            if (done) {
-              break;
-            }
+					const translatedSegments = translatedText.split("|");
+					for (const segment of translatedSegments) {
+						if (segment.trim()) {
+							const originalSegment = segments[currentIndex];
+							const srt = `${++currentIndex}\n${originalSegment?.timestamp || ""}\n${segment.trim()}\n\n`;
+							controller.enqueue(encoder.encode(srt));
+						}
+					}
+				}
+				controller.close();
+			},
+		});
 
-            const timestamp = segments[index].timestamp;
-            const decoded = decoder.decode(value);
-            const srt = [++index, timestamp, decoded].join("\n")
-            controller.enqueue(encoder.encode(srt));
-          }
-        }
-
-        controller.close();
-      }
-    });
-
-    return new Response(stream);
-  } catch (error) {
-    console.error("Error during translation:", error);
-    return new Response(JSON.stringify({ error: "Error during translation" }), {
-      status: 500,
-    });
-  }
+		return new Response(stream);
+	} catch (error) {
+		console.error("Error during translation:", error);
+		return new Response(JSON.stringify({ error: "Error during translation" }), {
+			status: 500,
+		});
+	}
 }
