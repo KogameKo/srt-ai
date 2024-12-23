@@ -7,7 +7,7 @@ const stripe = require("stripe")(process.env.STRIPE_SECRET_KEY);
 
 export const dynamic = "force-dynamic";
 
-const MAX_TOKENS_IN_SEGMENT = 700;
+const MAX_TOKENS_IN_SEGMENT = 200_000;
 
 const retrieveTranslation = async (text: string, language: string) => {
 	let retries = 3;
@@ -52,6 +52,12 @@ export async function POST(request: Request) {
 
 		const { sessionId, content, language } = await kv.get<any>(id);
 		const session = await stripe.checkout.sessions.retrieve(sessionId);
+
+		if (!session.customer) {
+			return new Response(JSON.stringify({ error: "Customer not found" }), {
+				status: 400,
+			});
+		}
 
 		const segments = content.split(/\r\n\r\n|\n\n/).map(parseSegment);
 		const groups = groupSegmentsByTokenLength(segments, MAX_TOKENS_IN_SEGMENT);

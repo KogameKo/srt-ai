@@ -1,106 +1,97 @@
-import { Segment } from "@/types";
-import {
-  ParsedEvent,
-  ReconnectInterval,
-  createParser,
-} from "eventsource-parser";
-import { encoding_for_model } from "tiktoken";
-import { JSONParser } from '@streamparser/json';
-import type { ParsedElementInfo } from '@streamparser/json';
+import type { Segment } from "@/types";
+import { createParser } from "eventsource-parser";
+import type { ParsedEvent, ReconnectInterval } from "eventsource-parser";
+import { google } from "@ai-sdk/google";
+import { JSONParser } from "@streamparser/json";
 
 /**
  * Groups segments into groups of length `length` or less.
  */
-export function groupSegmentsByTokenLength(segments: Segment[], length: number) {
-  const groups: Segment[][] = [];
-  let currentGroup: Segment[] = [];
-  let currentGroupTokenCount = 0;
-  const encoder = encoding_for_model("gpt-3.5-turbo");
+export function groupSegmentsByTokenLength(
+	segments: Segment[],
+	length: number,
+) {
+	const groups: Segment[][] = [];
+	let currentGroup: Segment[] = [];
+	let currentGroupTokenCount = 0;
 
-  function numTokens(text: string) {
-    const tokens = encoder.encode(text);
-    return tokens.length;
-  }
+	function numTokens(text: string) {
+		return Math.ceil(text.length / 4);
+	}
 
-  for (const segment of segments) {
-    const segmentTokenCount = numTokens(segment.text);
+	for (const segment of segments) {
+		const segmentTokenCount = numTokens(segment.text);
 
-    if (currentGroupTokenCount + segmentTokenCount <= length) {
-      currentGroup.push(segment);
-      currentGroupTokenCount += segmentTokenCount + 1; // include size of the "|" delimeter
-    } else {
-      groups.push(currentGroup);
-      currentGroup = [segment];
-      currentGroupTokenCount = segmentTokenCount;
-    }
-  }
+		if (currentGroupTokenCount + segmentTokenCount <= length) {
+			currentGroup.push(segment);
+			currentGroupTokenCount += segmentTokenCount + 1; // include size of the "|" delimeter
+		} else {
+			groups.push(currentGroup);
+			currentGroup = [segment];
+			currentGroupTokenCount = segmentTokenCount;
+		}
+	}
 
-  if (currentGroup.length > 0) {
-    groups.push(currentGroup);
-  }
+	if (currentGroup.length > 0) {
+		groups.push(currentGroup);
+	}
 
-  encoder.free(); // clear encoder from memory
-  return groups;
+	return groups;
 }
 
 // Ensures that we enqueue full segments only, and not partial segments.
 export function parseStreamedResponse(
-  response: any,
-): ReadableStream {
-  const encoder = new TextEncoder();
-  const decoder = new TextDecoder();
-  // Initialize the JSONParser with options tailored for your needs
-  // Here, we're interested in all elements of an array, hence the path '$.*'
-  const parser = new JSONParser({ paths: ['$.*'] });
+	response: Response,
+): ReadableStream<Uint8Array> {
+	const encoder = new TextEncoder();
+	const decoder = new TextDecoder();
+	const parser = new JSONParser({ paths: ["$.*"] });
 
-  return new ReadableStream({
-    async start(controller) {
-      const onParse = (event: ParsedEvent | ReconnectInterval) => {
-        if (event.type !== "event") return;
+	return new ReadableStream({
+		async start(controller) {
+			const onParse = (event: ParsedEvent | ReconnectInterval) => {
+				if (event.type !== "event") return;
 
-        const data = event.data;
+				const data = event.data;
 
-        if (data === "[DONE]") {
-          controller.close();
-          return;
-        }
+				if (data === "[DONE]") {
+					controller.close();
+					return;
+				}
 
-        const json = JSON.parse(data);
-        const text = json.choices[0]?.delta.content;
-        if (!text) return;
+				const json = JSON.parse(data);
+				const text = json.choices[0]?.delta.content;
+				if (!text) return;
 
-        // Direct JSON parsing to JSONParser
-        try {
-          parser.write(text); // Feed the data directly to JSONParser
-        } catch (e) {
-          controller.error(e);
-        }
-      };
+				try {
+					parser.write(text);
+				} catch (e) {
+					controller.error(e);
+				}
+			};
 
-      // Define the callback to process each array element
-      // This function is called whenever a complete array element is parsed
-      parser.onValue = (parsedElementInfo: ParsedElementInfo.ParsedElementInfo) => {
-        // Process the value here
-        // `value` is the parsed JSON array element
-        // Ensure that we're at the root of the JSON structure (stack === 1) to process top-level array elements
-        if (parsedElementInfo.stack.length === 1) {
-          controller.enqueue(encoder.encode(parsedElementInfo.value as string));
-        }
-      };
+			// @ts-ignore - JSONParser types are incorrect
+			parser.onValue = (value: unknown) => {
+				controller.enqueue(encoder.encode(value as string));
+			};
 
-      parser.onError = (err) => {
-        controller.error(err);
-      };
+			parser.onError = (err) => {
+				controller.error(err);
+			};
 
-      const parserFeed = createParser(onParse);
+			const parserFeed = createParser(onParse);
 
-      for await (const chunk of response.body as any) {
-        parserFeed.feed(decoder.decode(chunk));
-      }
+			if (response.body) {
+				const reader = response.body.getReader();
+				while (true) {
+					const { done, value } = await reader.read();
+					if (done) break;
+					parserFeed.feed(decoder.decode(value));
+				}
+			}
 
-      // Finalize JSON parsing
-      parser.end();
-      controller.close();
-    },
-  });
-};
+			parser.end();
+			controller.close();
+		},
+	});
+}
